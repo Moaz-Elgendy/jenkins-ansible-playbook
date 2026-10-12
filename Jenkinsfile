@@ -57,7 +57,8 @@ pipeline {
                     set -e
                     echo "Waiting for nginx to come up..."
                     for i in $(seq 1 10); do
-                        if curl -s -o /dev/null -w "%{http_code}" "http://${HOST_IP}" | grep -q "200\|301\|302"; then
+                        code=$(curl -s -o /dev/null -w "%{http_code}" "http://${HOST_IP}")
+                        if echo "$code" | grep -qE "^(200|301|302)$"; then
                             echo "SUCCESS: nginx is reachable at http://${HOST_IP}"
                             exit 0
                         fi

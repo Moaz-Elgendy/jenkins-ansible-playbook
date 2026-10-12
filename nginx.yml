@@ -130,13 +130,14 @@
       ansible.builtin.service:
         name: "{{ nginx_service }}"
         enabled: true
+      when: not ansible_check_mode
       tags: [service]
 
     - name: Start nginx (only when it is not running)
       ansible.builtin.service:
         name: "{{ nginx_service }}"
         state: started
-      when: nginx_status.rc != 0
+      when: not ansible_check_mode and nginx_status.rc != 0
       tags: [service]
 
     - name: Verify nginx is active after starting
@@ -144,9 +145,10 @@
       register: nginx_final_status
       changed_when: false
       failed_when: nginx_final_status.rc != 0
+      when: not ansible_check_mode
       tags: [service]
 
     - name: Show final service state
       ansible.builtin.debug:
-        msg: "nginx service is enabled and {{ nginx_final_status.stdout }}."
+        msg: "nginx service is enabled and {{ nginx_final_status.stdout | default('active (dry run)') }}."
       tags: [service]

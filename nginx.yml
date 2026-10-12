@@ -1,0 +1,152 @@
+---
+- name: Install, update and manage nginx
+  hosts: all
+  become: true
+  vars:
+    nginx_package: nginx
+    nginx_service: nginx
+
+  tasks:
+    # ---------------------------------------------------------------
+    # 1. Is nginx already installed?
+    # ---------------------------------------------------------------
+    - name: Check if nginx is already installed
+      ansible.builtin.shell: |
+        if command -v dpkg-query >/dev/null 2>&1; then
+          dpkg-query -W -f='${Status}' nginx 2>/dev/null | grep -q 'install ok installed'
+        elif command -v rpm >/dev/null 2>&1; then
+          rpm -q nginx >/dev/null 2>&1
+        else
+          command -v nginx >/dev/null 2>&1
+        fi
+      register: nginx_installed_check
+      changed_when: false
+      failed_when: false
+      tags: [install, update]
+
+    - name: Set nginx_installed fact
+      ansible.builtin.set_fact:
+        nginx_installed: "{{ nginx_installed_check.rc == 0 }}"
+      tags: [install, update]
+
+    # ---------------------------------------------------------------
+    # 2. If installed -> is there an update available?
+    # ---------------------------------------------------------------
+    - name: Refresh apt cache so the update check is accurate
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: nginx_installed and ansible_os_family == 'Debian'
+      tags: [update]
+
+    - name: Check for an available nginx update (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        set -o pipefail
+        apt list --upgradable 2>/dev/null | grep -E '^nginx/' || true
+      args:
+        executable: /bin/bash
+      register: nginx_apt_updates
+      changed_when: false
+      when: nginx_installed and ansible_os_family == 'Debian'
+      tags: [update]
+
+    - name: Check for an available nginx update (RedHat/CentOS/Rocky)
+      ansible.builtin.shell: |
+        if command -v dnf >/dev/null 2>&1; then
+          dnf check-update nginx >/dev/null 2>&1
+        else
+          yum check-update nginx >/dev/null 2>&1
+        fi
+        exit $?
+      register: nginx_rpm_updates
+      changed_when: false
+      failed_when: nginx_rpm_updates.rc not in [0, 100]
+      when: nginx_installed and ansible_os_family == 'RedHat'
+      tags: [update]
+
+    - name: Assume there is no update by default
+      ansible.builtin.set_fact:
+        nginx_update_available: false
+      tags: [update]
+
+    - name: Mark update available (apt)
+      ansible.builtin.set_fact:
+        nginx_update_available: true
+      when: >-
+        nginx_installed
+        and ansible_os_family == 'Debian'
+        and (nginx_apt_updates.stdout | default('') | trim | length > 0)
+      tags: [update]
+
+    - name: Mark update available (rpm - yum/dnf exit code 100 means updates exist)
+      ansible.builtin.set_fact:
+        nginx_update_available: true
+      when: >-
+        nginx_installed
+        and ansible_os_family == 'RedHat'
+        and (nginx_rpm_updates.rc | default(0) == 100)
+      tags: [update]
+
+    # ---------------------------------------------------------------
+    # 3. Install or update
+    # ---------------------------------------------------------------
+    - name: Fresh install of nginx
+      ansible.builtin.package:
+        name: "{{ nginx_package }}"
+        state: present
+      when: not nginx_installed
+      tags: [install]
+
+    - name: Report that nginx is already on the latest version
+      ansible.builtin.debug:
+        msg: "nginx is already installed with the latest version - nothing to update."
+      when: nginx_installed and not nginx_update_available
+      tags: [update]
+
+    - name: Update nginx to the latest version
+      ansible.builtin.package:
+        name: "{{ nginx_package }}"
+        state: latest
+      when: nginx_installed and nginx_update_available
+      tags: [update]
+
+    # ---------------------------------------------------------------
+    # 4. Service: check status, enable, start
+    # ---------------------------------------------------------------
+    - name: Check current nginx service status
+      ansible.builtin.command: systemctl is-active {{ nginx_service }}
+      register: nginx_status
+      changed_when: false
+      failed_when: false
+      tags: [service]
+
+    - name: Report that nginx is already running
+      ansible.builtin.debug:
+        msg: "nginx service is already running - no start needed."
+      when: nginx_status.rc == 0
+      tags: [service]
+
+    - name: Enable nginx to start on boot
+      ansible.builtin.service:
+        name: "{{ nginx_service }}"
+        enabled: true
+      tags: [service]
+
+    - name: Start nginx (only when it is not running)
+      ansible.builtin.service:
+        name: "{{ nginx_service }}"
+        state: started
+      when: nginx_status.rc != 0
+      tags: [service]
+
+    - name: Verify nginx is active after starting
+      ansible.builtin.command: systemctl is-active {{ nginx_service }}
+      register: nginx_final_status
+      changed_when: false
+      failed_when: nginx_final_status.rc != 0
+      tags: [service]
+
+    - name: Show final service state
+      ansible.builtin.debug:
+        msg: "nginx service is enabled and {{ nginx_final_status.stdout }}."
+      tags: [service]
